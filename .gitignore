@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/secrets.json
+
+# Local DB
+local_cache.db
+
+# Storage (Optional - commonly uploaded for demos, but let's exclude to keep repo clean)
+2D_Storage/
