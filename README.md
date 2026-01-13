@@ -11,11 +11,18 @@ A comprehensive Asset & Change Management system. This application allows for ma
 *   **Visual Dependency Mapping**: Auto-generate downstream dependency graphs to analyze the impact of failures.
 *   **Hybrid Database**: Works seamlessly in **Online (Cloud MySQL)** or **Offline (Local SQLite)** modes with synchronization.
 
-## � Installation & Setup
+##  Installation & Setup
 
-### 1. Prerequisites
+### Prerequisites
+
 *   **OS**: Windows 10/11
-*   **Python**: 3.9+
+*   **Python 3.10+**
+*   **MySQL Database** (or use the built-in offline mode)
+    *   **Network Requirements**: If using a Cloud Database (e.g., Azure MySQL, AWS RDS), ensure your firewall/network allows:
+        *   **Protocol**: TCP
+        *   **Port**: 3306 (Default MySQL port)
+        *   **Direction**: Outbound (from App) and Inbound (to DB)
+*   **Git** (for version control)
 *   **Graphviz**: Recommended for dependency visualization. [Download Installer](https://graphviz.org/download/) (Add to System PATH during installation).
 
 ### 2. Initial Setup
@@ -51,10 +58,24 @@ streamlit run app.py
 *   `database_manager.py`: Handles hybrid connection logic (Cloud <-> Local sync) and Schema.
 *   `database_setup.py`: **Master Setup Script**. Resets DB, creates schema, and seeds initial data.
 *   `pages/`: Contains specific sub-pages (Ticket History, Grid Editor).
-*   `2D_Storage/`: Directory for storing ticket attachments.
-*   `local_cache.db`: Local SQLite database (created automatically).
-
-## 🛟 Troubleshooting
+62: *   `2D_Storage/`: Directory for storing ticket attachments.
+63: *   `local_cache.db`: Local SQLite database (created automatically).
+64: 
+65: ## 🔄 Offline Mode & Synchronization
+66: 
+67: The app is designed for field operations where connectivity is unreliable.
+68: 
+69: 1.  **Work Offline**:
+70:     *   If the Cloud DB is unreachable, the app automatically switches to **Offline Mode (Local Cache)**.
+71:     *   You can continue to view assets and create tickets.
+72:     *   Tickets created offline are saved to `local_cache.db`.
+73: 
+74: 2.  **Two-Way Sync**:
+75:     *   When back online, click the **"🔄 Sync with Cloud"** button in the sidebar.
+76:     *   **Push**: Your offline tickets are uploaded to the Cloud.
+77:     *   **Pull**: The latest assets and tickets from the Cloud are downloaded to your device.
+78: 
+79: ## 🛟 Troubleshooting
 
 *   **"Offline Mode"**: The app defaults to this if it cannot reach the Cloud MySQL server. Check your internet or Reference `secrets.toml`.
 *   **Graphviz Executable Not Found**: Ensure Graphviz is installed and added to your Windows PATH.

@@ -298,6 +298,13 @@ class DatabaseManager:
 
     def _sync_data(self):
         """Pull data from Cloud and Push to Local"""
+        
+        # 0. PUSH Local Changes FIRST (Tickets only for now)
+        try:
+            self._push_local_tickets()
+        except Exception as e:
+            print(f"Push Sync Failed: {e}")
+
         # We manually fetch tables and insert/replace
         tables = ['assets', 'tickets', 'iso_controls', 'nist_controls', 'policies', 
                   'asset_controls', 'asset_nist_controls', 'policy_nist_mappings', 'ticket_attachments']
@@ -337,3 +344,59 @@ class DatabaseManager:
         local_conn.commit()
         local_conn.close()
         cloud_conn.close()
+
+    def _push_local_tickets(self):
+        """
+        Identifies locally created tickets (offline) and pushes them to Cloud.
+        Strategy: Check for tickets in Local that don't match (Title + Date + User) in Cloud.
+        """
+        print("Pushing Local Tickets to Cloud...")
+        local_conn = self._get_local_conn()
+        local_conn.row_factory = self._dict_factory
+        cur_local = local_conn.cursor()
+        
+        cloud_conn = self._get_cloud_conn()
+        cur_cloud = cloud_conn.cursor(dictionary=True)
+        
+        # Get all local tickets
+        cur_local.execute("SELECT * FROM tickets")
+        local_tickets = cur_local.fetchall()
+        
+        pushed_count = 0
+        
+        for t in local_tickets:
+            # Check if exists in Cloud (Composite Key: Title, LoggedBy, CreatedAt approx)
+            # Timestamps might drift slightly between SQL types, so we check title + user + asset
+            check_sql = "SELECT id FROM tickets WHERE title=%s AND logged_by=%s AND asset_id=%s"
+            cur_cloud.execute(check_sql, (t['title'], t['logged_by'], t['asset_id']))
+            exists = cur_cloud.fetchone()
+            
+            if not exists:
+                print(f"Syncing Ticket: {t['title']}")
+                # Insert into Cloud
+                ins_sql = """INSERT INTO tickets (asset_id, ticket_type, title, description, priority, status, logged_by, created_at, updated_at) 
+                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                cur_cloud.execute(ins_sql, (t['asset_id'], t['ticket_type'], t['title'], t['description'], 
+                                            t['priority'], t['status'], t['logged_by'], t['created_at'], t['updated_at']))
+                
+                # Get new Cloud ID
+                new_id = cur_cloud.lastrowid
+                
+                # Update Local Record to match Cloud ID (Reconciliation)
+                # This prevents duplicate creates on next sync
+                # Also we must update attachments to point to new ID
+                old_id = t['id']
+                cur_local.execute("UPDATE tickets SET id = ? WHERE id = ?", (new_id, old_id))
+                cur_local.execute("UPDATE ticket_attachments SET ticket_id = ? WHERE ticket_id = ?", (new_id, old_id))
+                
+                pushed_count += 1
+                
+        if pushed_count > 0:
+            print(f"Pushed {pushed_count} tickets to Cloud.")
+            cloud_conn.commit()
+            local_conn.commit()
+            
+        cur_cloud.close()
+        cloud_conn.close()
+        cur_local.close()
+        local_conn.close()

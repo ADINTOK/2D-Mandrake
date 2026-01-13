@@ -157,17 +157,6 @@ def fetch_asset_history(asset_id, limit=20):
     """
     return execute_query(sql, (asset_id, limit), fetch=True) or []
 
-def fetch_recent_tickets(limit=50):
-    """
-    Retrieves global list of tickets.
-    """
-    sql = """
-        SELECT t.id, t.created_at, t.ticket_type, t.priority, t.status, t.title, t.description, t.logged_by, a.name as asset_name 
-        FROM tickets t
-        JOIN assets a ON t.asset_id = a.id
-        ORDER BY t.created_at DESC
-        LIMIT %s
-    """
     return execute_query(sql, (limit,), fetch=True) or []
 
 # --- Helper Logic ---
@@ -541,7 +530,10 @@ if page == "Hierarchy Explorer":
                         for f in t_files:
                             save_attachment(ticket_id, f)
                             
-                    st.success("Ticket Created & Files Uploaded!")
+                    save_mode = st.session_state.db_manager.mode
+                    mode_icon = "☁️ Cloud" if save_mode == "CLOUD" else "📂 Local"
+                    
+                    st.success(f"Ticket Created & Files Uploaded! (Saved to {mode_icon})")
                     st.session_state.show_ticket_form = False
                     st.rerun()
                 else:
@@ -692,44 +684,9 @@ elif page == "Analysis & Impact":
                     st.graphviz_chart(graph)
                     st.caption(f"Found {len(edges)} downstream dependencies.")
 
-# ⚠️ PAGE: TICKET DASHBOARD
-elif page == "Recent Changes":
-    st.subheader("Ticket Dashboard")
-    st.caption("Global list of Incidents, Service Requests, and Changes")
-    
-    # Simple Filter
-    col_fil_1, col_fil_2 = st.columns(2)
-    show_open = col_fil_1.checkbox("Show Open/In Progress Only", value=True)
-    
-    tickets = fetch_recent_tickets(limit=100)
-    
-    if tickets:
-        df = pd.DataFrame(tickets)
-        
-        if show_open:
-            df = df[df['status'].isin(['Open', 'In Progress'])]
-        
-        # DataFrame display with column configuration
-        st.dataframe(
-            df,
-            column_order=["created_at", "status", "priority", "ticket_type", "asset_name", "title", "logged_by"],
-            column_config={
-                "created_at": st.column_config.DatetimeColumn("Date", format="D MMM, h:mm a"),
-                "asset_name": "Asset",
-                "ticket_type": "Type",
-                "priority": st.column_config.TextColumn("Priority"),
-                "status": st.column_config.TextColumn("Status"),
-                "title": "Summary"
-            },
-            hide_index=True,
-            use_container_width=True
-        )
-    else:
-        st.info("No tickets found.")
-
 # ⚠️ PAGE: POLICIES
 elif page == "Policies & Standards":
-    st.subheader(" Cybersecurity Policies & Standards")
+    st.title("📜 Policy & Standards Library")
     st.caption("🔗 Connected Table: `policies` JOIN `nist_controls`")
     
     # 1. Create Policy Form

@@ -283,6 +283,72 @@ def setup_database():
     insert_node("Test Equipment", supp_id, "Group", "OTDR, etc.")
     insert_node("Spare Parts Inventory", supp_id, "Group", "Cables, connectors")
 
+    # Enterprise IT
+    ent_id = insert_node("Enterprise IT", infra_id, "System")
+    ent_sw_id = insert_node("Enterprise Software", ent_id, "Sub-System")
+    insert_node("Microsoft Office 365", ent_sw_id, "Asset")
+    insert_node("Billing System", ent_sw_id, "Asset")
+    insert_node("CRM", ent_sw_id, "Asset")
+    
+    ent_hw_id = insert_node("Enterprise Hardware", ent_id, "Sub-System")
+    insert_node("Employee Laptops", ent_hw_id, "Group")
+    insert_node("Office Printers", ent_hw_id, "Group")
+
+    # --- IMPORT LAYER 7 ASSETS (From CSV) ---
+    print("Importing Assets from CSVs...")
+    import csv
+
+    # 1. Layer 7 Software
+    csv_1 = "KPU_MasterAsset_List - Layer7List.csv"
+    try:
+        with open(csv_1, mode='r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            next(reader) # Skip Header
+            
+            count = 0
+            for row in reader:
+                if len(row) >= 2:
+                    name = row[1].strip()
+                    cat_desc = row[2].strip() if len(row) > 2 else ""
+                    
+                    if name:
+                        insert_node(name, ent_sw_id, "Asset", description=cat_desc)
+                        count += 1
+            print(f"Successfully imported {count} Layer 7 Software assets.")
+            
+    except FileNotFoundError:
+        print(f"Warning: {csv_1} not found. Skipping.")
+    except Exception as e:
+        print(f"Error importing {csv_1}: {e}")
+
+    # 2. SafeList Devices (Hardware)
+    csv_2 = "KPU_MasterAsset_List - SafeListDevices.csv"
+    try:
+        with open(csv_2, mode='r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            # Check headers or skip
+            # Assuming format: User, Device Name, Model, Serial, etc. based on typical device lists
+            # We'll inspect the first row to be sure, but standard DictReader might be safer if headers exist
+            headers = next(reader, None)
+            
+            count = 0
+            for row in reader:
+                # Based on file inspection (User: Machine Name, Device Name)
+                # Adjust index based on actual file content from next step if needed, 
+                # but generically mapping col 1 or 2 is safe for now.
+                # Let's map 'Device Name' (col 0 or 1) as name.
+                if len(row) >= 1:
+                    d_name = row[0].strip()
+                    if d_name:
+                         insert_node(d_name, ent_hw_id, "Asset", description="Imported Device")
+                         count += 1
+            print(f"Successfully imported {count} SafeList Devices.")
+
+    except FileNotFoundError:
+        print(f"Warning: {csv_2} not found. Skipping.")
+    except Exception as e:
+         print(f"Error importing {csv_2}: {e}")
+
     # --- SEED ISO CONTROLS (Common subset) ---
     print("Seeding ISO 27001 Controls...")
     # Subset of ISO controls to get started

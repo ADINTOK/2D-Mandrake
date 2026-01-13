@@ -13,8 +13,10 @@ To support field operations where internet might be intermittent, the app abstra
 2.  **Local Mode (Fallback)**:
     *   Uses `sqlite3` with a local file `local_cache.db`.
     *   **Query Translation**: The manager automatically translates MySQL-specific syntax (e.g., `%s` placeholders, `NOW()`) into SQLite-compatible syntax at runtime.
-    *   **Sync**: A `sync()` method pulls data from Cloud to Local to ensure offline data is 
-    up-to-date.
+    *   **Sync**: A `sync()` method performs a two-way synchronization:
+        1.  **Push**: Uploads locally created tickets to the Cloud (checking for duplicates via Composite Key).
+        2.  **Reconcile**: Updates local IDs to match the newly generated Cloud IDs.
+        3.  **Pull**: Downloads the latest data from Cloud to Local cache.
 
 ## Database Schema
 
