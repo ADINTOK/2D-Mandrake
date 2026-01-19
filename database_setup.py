@@ -54,7 +54,15 @@ def setup_database():
         "policies",
         "nist_controls",
         "iso_controls",
-        "assets"
+        "assets",
+        "kpu_component_assets",
+        "kpu_enterprise_assets",
+        "kpu_technical_services",
+        "kpu_business_services_level2",
+        "kpu_business_services_level1",
+        "kpu_business_services",
+        "kpu_enterprise_software",
+        "kpu_enterprise_computing_machines"
     ]
     for t in tables_to_drop:
         cursor.execute(f"DROP TABLE IF EXISTS {t}")
@@ -77,20 +85,23 @@ def setup_database():
     ) ENGINE=InnoDB;
     """)
 
-    cursor.execute("""
     CREATE TABLE tickets (
         id INT AUTO_INCREMENT PRIMARY KEY,
         asset_id INT NOT NULL,
         ticket_type VARCHAR(50), -- Incident, Service Request, Change, Problem
         title VARCHAR(255),
         description TEXT,
-        status VARCHAR(50) DEFAULT 'Open', -- Open, In Progress, Resolved, Closed
-        priority VARCHAR(50), -- Low, Medium, High, Critical
+        status VARCHAR(50) DEFAULT 'Open', 
+        priority VARCHAR(50), 
         logged_by VARCHAR(100),
+        related_type VARCHAR(50) DEFAULT 'asset',
+        due_date DATETIME, -- V2: SLA Due Date
+        problem_id INT, -- V2: Linked Problem
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_asset_id (asset_id),
-        CONSTRAINT fk_tickets_asset FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+        CONSTRAINT fk_tickets_asset FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+        CONSTRAINT fk_ticket_problem FOREIGN KEY (problem_id) REFERENCES problems(id) ON DELETE SET NULL
     ) ENGINE=InnoDB;
     """)
 
@@ -136,6 +147,71 @@ def setup_database():
         category VARCHAR(100), -- Organizational Context, Risk Management Strategy, etc.
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;
+    """)
+
+    # 4. ITIL V2 Tables (Knowledge Base, SLAs, Problems, Licenses, CAB)
+    
+    # Knowledge Base
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS knowledge_articles (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        content TEXT,
+        category VARCHAR(100),
+        tags VARCHAR(255),
+        author VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;
+    """)
+
+    # SLA Policies
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sla_policies (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        priority VARCHAR(50) UNIQUE, -- Critical, High, Medium, Low
+        response_time_minutes INT,
+        resolution_time_minutes INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;
+    """)
+    
+    # Problems (Problem Management)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS problems (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        root_cause_analysis TEXT,
+        status VARCHAR(50) DEFAULT 'Open',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;
+    """)
+
+    # Software Licenses
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS software_licenses (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        software_asset_id INT NOT NULL,
+        license_key VARCHAR(255),
+        vendor VARCHAR(255),
+        total_seats INT DEFAULT 0,
+        used_seats INT DEFAULT 0,
+        expiration_date DATE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;
+    """)
+    
+    # Change Approvals (CAB)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS change_approvals (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        ticket_id INT NOT NULL,
+        approver_role VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'Pending',
+        comments TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT fk_approvals_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
     ) ENGINE=InnoDB;
     """)
 
@@ -378,6 +454,170 @@ def setup_database():
         ("RC.RP-01", "Recover", "Incident Recovery", "Recovery plan is executed.")
     ]
     cursor.executemany("INSERT INTO nist_controls (id, function, category, description) VALUES (%s, %s, %s, %s)", nist_controls)
+
+    # =============================================================================
+    # 2. HIERARCHY V2.0 TABLES (New Strict Schema)
+    # =============================================================================
+    print(" Creating Hierarchy v2.0 Tables...")
+    
+    # Table 1: Business Services Level 1
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS kpu_business_services_level1 (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        owner VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;
+    """)
+
+    # Table 2: Business Services Level 2 (Child of Level 1)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS kpu_business_services_level2 (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        business_service_level1_id INT,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (business_service_level1_id) REFERENCES kpu_business_services_level1(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB;
+    """)
+    
+    # Table 3: Technical Services (Child of Level 2)
+    # NOTE: Was child of 'business_service' (Level 1), now child of 'level 2'
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS kpu_technical_services (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        business_service_level2_id INT,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        sla_level VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (business_service_level2_id) REFERENCES kpu_business_services_level2(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB;
+    """)
+    
+    # Table 4: Enterprise Assets (Child of Technical Service)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS kpu_enterprise_assets (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        technical_service_id INT,
+        name VARCHAR(255) NOT NULL,
+        asset_type VARCHAR(100), -- Server, Database, Router, etc.
+        location VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'Active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (technical_service_id) REFERENCES kpu_technical_services(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB;
+    """)
+    
+    # Table 5: Component Assets (Child of Enterprise Asset)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS kpu_component_assets (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        enterprise_asset_id INT,
+        name VARCHAR(255) NOT NULL,
+        component_type VARCHAR(100), -- Module, Agent, Disk, etc.
+        version VARCHAR(50),
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (enterprise_asset_id) REFERENCES kpu_enterprise_assets(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB;
+    """)
+    
+    # =============================================================================
+    # 3. SEED DATA FOR V2.0
+    # =============================================================================
+    # Only seed if empty to prevent duplicates on re-run
+    # Check Level 1 table
+    cursor.execute("SELECT COUNT(*) FROM kpu_business_services_level1")
+    if cursor.fetchone()[0] == 0:
+        print(" Seeding Hierarchy v2.0 Data...")
+        
+        # 1. Business Services Level 1
+        l1_data = [
+            ("Corporate Operations", "Core business functions", "COO"),
+            ("Finance Org", "Financial management", "CFO")
+        ]
+        for name, desc, owner in l1_data:
+            cursor.execute("INSERT INTO kpu_business_services_level1 (name, description, owner) VALUES (%s, %s, %s)", (name, desc, owner))
+            
+        # Get L1 ID
+        cursor.execute("SELECT id FROM kpu_business_services_level1 WHERE name='Corporate Operations'")
+        l1_ops_id = cursor.fetchone()[0]
+        
+        # 2. Business Services Level 2
+        l2_data = [
+            (l1_ops_id, "Corporate Communications", "Internal messaging and email services"),
+            (l1_ops_id, "Facilities Management", "Physical office management")
+        ]
+        for pid, name, desc in l2_data:
+             cursor.execute("INSERT INTO kpu_business_services_level2 (business_service_level1_id, name, description) VALUES (%s, %s, %s)", (pid, name, desc))
+
+        # Get L2 ID
+        cursor.execute("SELECT id FROM kpu_business_services_level2 WHERE name='Corporate Communications'")
+        l2_comm_id = cursor.fetchone()[0]
+        
+        # 3. Technical Services (Now linked to Level 2)
+        ts_data = [
+            (l2_comm_id, "Exchange Email Service", "Core email routing and storage", "Gold"),
+            (l2_comm_id, "Teams Collaboration", "Chat and Video conferencing", "Silver")
+        ]
+        for pid, name, desc, sla in ts_data:
+            cursor.execute("INSERT INTO kpu_technical_services (business_service_level2_id, name, description, sla_level) VALUES (%s, %s, %s, %s)", (pid, name, desc, sla))
+            
+        # Get IDs
+        cursor.execute("SELECT id FROM kpu_technical_services WHERE name='Exchange Email Service'")
+        ts_email_id = cursor.fetchone()[0]
+        
+        # 4. Enterprise Assets
+        ea_data = [
+            (ts_email_id, "EXCH-SVR-01", "Server", "NY Data Center"),
+            (ts_email_id, "EXCH-SVR-02", "Server", "London Data Center"),
+            (ts_email_id, "Email Gateway Appliance", "Appliance", "Cloud")
+        ]
+        for pid, name, atype, loc in ea_data:
+            cursor.execute("INSERT INTO kpu_enterprise_assets (technical_service_id, name, asset_type, location) VALUES (%s, %s, %s, %s)", (pid, name, atype, loc))
+            
+        # Get IDs
+        cursor.execute("SELECT id FROM kpu_enterprise_assets WHERE name='EXCH-SVR-01'")
+        ea_svr_id = cursor.fetchone()[0]
+        
+        # 5. Component Assets
+        ca_data = [
+            (ea_svr_id, "Transport Agent", "Software Module", "v15.2"),
+            (ea_svr_id, "C: Drive Volume", "Storage", "500GB SSD"),
+            (ea_svr_id, "Network Interface Card", "Hardware", "10GbE")
+        ]
+        for pid, name, ctype, ver in ca_data:
+            cursor.execute("INSERT INTO kpu_component_assets (enterprise_asset_id, name, component_type, version) VALUES (%s, %s, %s, %s)", (pid, name, ctype, ver))
+
+        # 16. KPU Enterprise Software
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kpu_enterprise_software (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            asset_id VARCHAR(255),
+            name VARCHAR(255),
+            manufacturer VARCHAR(255),
+            mfa_enabled VARCHAR(50),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB;
+        """)
+
+        # 17. KPU Enterprise Computing Machines
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kpu_enterprise_computing_machines (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            asset_id VARCHAR(255),
+            name VARCHAR(255),
+            ip_address VARCHAR(50),
+            mac_address VARCHAR(50),
+            owner VARCHAR(255),
+            os_type VARCHAR(100),
+            location VARCHAR(255),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB;
+        """)
 
     conn.commit()
     print("Database Setup Complete.")

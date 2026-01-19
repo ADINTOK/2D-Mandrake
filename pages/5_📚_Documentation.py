@@ -12,14 +12,50 @@ def read_file(filename):
             return f.read()
     return f"⚠️ Error: `{filename}` not found."
 
-# Create tabs for different documentation sources
-tab_user, tab_tech, tab_schema = st.tabs(["📖 User Guide", "⚙️ Technical Specs", "🗄️ Live Schema"])
+from database_manager import DatabaseManager
 
-with tab_user:
+# Initialize Database Manager
+if 'db_manager' not in st.session_state:
+    st.session_state.db_manager = DatabaseManager()
+
+# Global Sidebar: Connectivity & Sync Controls
+st.session_state.db_manager.render_sidebar_status()
+
+# Create tabs for different documentation sources
+tab_guide, tab_walk, tab_user, tab_portal, tab_tech, tab_schema = st.tabs(["🔰 ITIL & ISO Primer", "🚀 Walkthrough", "📖 User Guide", "🌐 Self-Service Portal", "⚙️ Technical Specs", "🗄️ Live Schema"])
+
+with tab_guide:
+    st.markdown(read_file("ITIL_GUIDE.md"))
     st.markdown(read_file("README.md"))
 
 with tab_tech:
     st.markdown(read_file("TECHNICAL_DOCS.md"))
+
+with tab_portal:
+    st.header("🌐 Companion App / Self-Service Portal")
+    st.info("A separate light-weight web portal is available for end-users to submit tickets and view knowledge base articles without accessing this admin console.")
+    
+    st.markdown("""
+    ### Access Details
+    - **URL**: [http://74.208.225.182/dubay/2D_Mandrake/](http://74.208.225.182/dubay/2D_Mandrake/)
+    - **Purpose**: End-User Ticket Submission & Status View
+    - **Framework**: Python NiceGUI
+    - **Hosted On**: Same VPS, connecting to `dubaytech_db`.
+    
+    ### Management
+    The app runs as a systemd service on the Linux server.
+    - **Restart**: `systemctl restart companion.service`
+    - **Logs**: `journalctl -u companion.service -f`
+    """)
+
+with tab_walk:
+    # Attempt to read from Artifacts if local file not present, or fallback
+    # Since we saved walkthrough.md in Brain, we might need to copy it or read absolute.
+    # For now, let's assume we want to read the local copy if we move it there, 
+    # OR we can hardcode the path to the artifact for this dev session.
+    # Ideally, we should copy the artifact to the app dir.
+    # Let's try reading a local "WALKTHROUGH.md" and I'll copy the artifact content there.
+    st.markdown(read_file("WALKTHROUGH.md"))
 
 with tab_schema:
     st.subheader("Live Database Schema")

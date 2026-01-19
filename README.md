@@ -4,12 +4,16 @@ A comprehensive Asset & Change Management system. This application allows for ma
 
 ## 🌟 Key Features
 
+
 *   **Asset Hierarchy Explorer**: Visualize and manage complex asset relationships (Company -> Service -> System -> Asset).
+*   **Companion App (Client Portal)**: A secure, web-based portal for end-users to submit tickets and view system status.
+    *   **Authentication**: Secure Login required.
+    *   **User Management**: Managed via VPS Database for consistency.
 *   **Ticketing System**: Raise **Incidents**, **Service Requests**, **Changes**, and **Problems** directly linked to assets.
-*   **Document Management**: Attach files (PDF, Images) to tickets, stored securely in `2D_Storage`.
-*   **Compliance Manager**: Link **ISO 27001** and **NIST CSF 2.0** controls directly to assets or policies.
-*   **Visual Dependency Mapping**: Auto-generate downstream dependency graphs to analyze the impact of failures.
-*   **Hybrid Database**: Works seamlessly in **Online (Cloud MySQL)** or **Offline (Local SQLite)** modes with synchronization.
+*   **Compliance & Hierarchy V2**: Mapping **ISO 27001**, **NIST CSF 2.0**, and advanced Enterprise Assets.
+*   **SSH Tunneling**: Secure access to VPS databases via automated port forwarding.
+*   **High Availability**: One-click **Swap Roles** to switch between Primary and Secondary cloud nodes.
+*   **Hybrid Database**: Works in **Online (Cloud MySQL)** or **Offline (Local SQLite)** modes with synchronization.
 
 ##  Installation & Setup
 
@@ -58,24 +62,51 @@ streamlit run app.py
 *   `database_manager.py`: Handles hybrid connection logic (Cloud <-> Local sync) and Schema.
 *   `database_setup.py`: **Master Setup Script**. Resets DB, creates schema, and seeds initial data.
 *   `pages/`: Contains specific sub-pages (Ticket History, Grid Editor).
-62: *   `2D_Storage/`: Directory for storing ticket attachments.
-63: *   `local_cache.db`: Local SQLite database (created automatically).
-64: 
-65: ## 🔄 Offline Mode & Synchronization
-66: 
-67: The app is designed for field operations where connectivity is unreliable.
-68: 
-69: 1.  **Work Offline**:
-70:     *   If the Cloud DB is unreachable, the app automatically switches to **Offline Mode (Local Cache)**.
-71:     *   You can continue to view assets and create tickets.
-72:     *   Tickets created offline are saved to `local_cache.db`.
-73: 
-74: 2.  **Two-Way Sync**:
-75:     *   When back online, click the **"🔄 Sync with Cloud"** button in the sidebar.
-76:     *   **Push**: Your offline tickets are uploaded to the Cloud.
-77:     *   **Pull**: The latest assets and tickets from the Cloud are downloaded to your device.
-78: 
-79: ## 🛟 Troubleshooting
+*   `2D_Storage/`: Directory for storing ticket attachments.
+*   `local_cache.db`: Local SQLite database (created automatically).
+
+## 🔄 Offline Mode & Synchronization
+
+The app is designed for field operations where connectivity is unreliable.
+
+1.  **Work Offline**:
+    *   If the Cloud DB is unreachable, the app automatically switches to **Offline Mode (Local Cache)**.
+    *   You can continue to view assets and create tickets.
+    *   Tickets created offline are saved to `local_cache.db`.
+
+2.  **Two-Way Cloud Sync**:
+    *   When back online, click the **"🔄 Sync Cloud DB"** button in the sidebar.
+    *   **Push**: Your offline tickets are uploaded to the Cloud.
+    *   **Pull**: The latest assets from the Cloud are downloaded.
+
+3.  **File Synchronization (Local ↔ Network)**:
+    *   Configure a **Network / Shared Path** in `Settings` > `File Storage`.
+    *   Use the **"📂 Sync Files (Net)"** button in the sidebar to synchronize attachments between your local cache and the network share.
+    *   Ensures you have access to files even when the network is down (via Local Cache).
+
+## 🌍 Companion App (Support Portal)
+
+A standalone web portal for end-users updates.
+
+*   **URL**: `/dubay/2D_Mandrake/`
+*   **Features**:
+    *   **Secure Access**: User Authentication required.
+    *   **Live Status**: View real-time system health.
+    *   **Submit Tickets**: Simple form for reporting issues.
+    *   **Knowledge Base**: Read-only view of helpful articles.
+*   **Tech Stack**: Python (NiceGUI + FastAPI), running on the same VPS.
+*   **Administration**:
+    *   Go to **Settings (Page 99)** in the main 2D Mandrake app.
+    *   Look for **👥 Companion App Users**.
+    *   **Features**: Add/Remove users and **🔑 Reset Passwords** directly from the UI.
+*   **Deployment**:
+    Managed via the `2D_Linux_Wizard` logic or manually:
+    ```powershell
+    python deploy_fastapi_companion.py
+    ```
+
+## 🛟 Troubleshooting
 
 *   **"Offline Mode"**: The app defaults to this if it cannot reach the Cloud MySQL server. Check your internet or Reference `secrets.toml`.
 *   **Graphviz Executable Not Found**: Ensure Graphviz is installed and added to your Windows PATH.
+*   **Port Collision**: If swapping roles rapidly, the app may show a port error. Wait 2 seconds and retry; the `SSHTunnel` helper has built-in retry logic.

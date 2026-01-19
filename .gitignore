@@ -9,6 +9,7 @@ __pycache__/
 
 # Local DB
 local_cache.db
+local_data.db
 
 # Storage (Optional - commonly uploaded for demos, but let's exclude to keep repo clean)
 2D_Storage/
