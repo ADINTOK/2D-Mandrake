@@ -52,6 +52,13 @@ def save_toml(path, data):
 st.set_page_config(page_title="Settings", page_icon="⚙️", layout="wide")
 
 st.title("⚙️ Settings")
+st.info("""
+**Global System Governance**
+Manage the technical foundations of the Mandrake platform. 
+Configure primary and secondary database connections (MySQL), manage SSH tunnels for secure access, 
+and oversee the Companion App's user registry. These settings ensure the high availability 
+and security of your service management infrastructure.
+""")
 
 # Initialize DB Manager (Aggressive Refresh)
 # We check for the existence of new methods (get_storage_config) to ensure
@@ -59,9 +66,17 @@ st.title("⚙️ Settings")
 # Robust Session State management to handle hot-reloads
 if 'db_manager' in st.session_state:
     # Check if instance is stale (missing methods) or class changed
+    # Also check specific method signatures that changed
+    import inspect
     try:
         if not hasattr(st.session_state.db_manager, 'get_companion_users'):
-            raise AttributeError("Stale DB Manager logic")
+            raise AttributeError("Stale DB Manager logic (Missing Method)")
+            
+        # Check signature of add_companion_user for full_name
+        sig = inspect.signature(st.session_state.db_manager.add_companion_user)
+        if 'full_name' not in sig.parameters:
+             raise AttributeError("Stale DB Manager logic (Old Signature)")
+             
     except AttributeError:
         # Force a hard reset by deleting the key
         del st.session_state.db_manager
@@ -87,7 +102,7 @@ with c1:
     st.subheader("Cloud Connection (MySQL)")
     
     # --- Swap Logic ---
-    if st.button("🔄 Swap Primary & Secondary Roles", help="Promote Backup to Primary and vice-versa. Updates secrets.toml."):
+    if st.button("🔄 Swap Primary & Secondary Roles", help="Promote Backup to Primary and vice-versa. This updates the underlying secrets.toml and restarts the connection context."):
         secrets_path = ".streamlit/secrets.toml"
         if os.path.exists(secrets_path):
             try:
@@ -322,42 +337,59 @@ with st.spinner("Checking VPS User Database..."):
     if st.session_state.db_manager.mode == "CLOUD" or users:
         # User List
         if users:
-            # Convert to DataFrame for nice display or use columns
+            # Table Header
+            c1, c2, c3, c4, c5 = st.columns([0.2, 0.2, 0.2, 0.2, 0.2])
+            c1.markdown("**User**")
+            c2.markdown("**Role**")
+            c3.markdown("**Status**")
+            c4.markdown("**Actions**")
+            
             for u in users:
-                uc1, uc2, uc3, uc4 = st.columns([0.3, 0.2, 0.3, 0.2])
+                uc1, uc2, uc3, uc4, uc5 = st.columns([0.2, 0.2, 0.2, 0.2, 0.2])
                 with uc1:
                     st.markdown(f"**{u['username']}**")
+                    if u.get('full_name'):
+                        st.caption(u['full_name'])
                 with uc2:
-                    st.caption(f"{u['role']}")
+                    st.caption(f"{u.get('role', 'user')}")
                 with uc3:
-                    st.caption(f"Created: {u['created_at']}")
+                    # Status Toggle
+                    is_active = bool(u.get('is_active', 1))
+                    if st.toggle(label="Active", value=is_active, key=f"status_{u['username']}", label_visibility="collapsed"):
+                        if not is_active: # Changed to True
+                             st.session_state.db_manager.update_companion_user_status(u['username'], True)
+                             st.rerun()
+                    else:
+                        if is_active: # Changed to False
+                             st.session_state.db_manager.update_companion_user_status(u['username'], False)
+                             st.rerun()
+                    
+                    st.caption("Enabled" if is_active else "Disabled")
+
                 with uc4:
                     if u['username'] != 'admin': # Prevent deleting admin
-                        if st.button("🗑️ Delete", key=f"del_{u['username']}"):
+                        if st.button("🗑️", key=f"del_{u['username']}", help="Delete User"):
                             success, msg = st.session_state.db_manager.delete_companion_user(u['username'])
                             if success:
-                                st.success(f"Deleted {u['username']}")
+                                st.success(f"Deleted")
                                 time.sleep(1)
                                 st.rerun()
-                            else:
-                                st.error(msg)
                     else:
                         st.caption("Protected")
 
-            with uc1:
-                with st.expander(f"🔑 Reset Password: {u['username']}"):
-                    new_pw = st.text_input("New Password", type="password", key=f"pw_{u['username']}")
-                    if st.button("Update Password", key=f"btn_pw_{u['username']}"):
-                        if new_pw:
-                            success, msg = st.session_state.db_manager.update_companion_user_password(u['username'], new_pw)
-                            if success:
-                                st.success(msg)
-                                time.sleep(1)
-                                st.rerun()
+                # Edit Expander (Password)
+                with uc5:
+                     with st.popover("🔑 Pwd"):
+                        new_pw = st.text_input("New Password", type="password", key=f"pw_{u['username']}")
+                        if st.button("Update", key=f"btn_pw_{u['username']}"):
+                            if new_pw:
+                                success, msg = st.session_state.db_manager.update_companion_user_password(u['username'], new_pw)
+                                if success:
+                                    st.toast("Password Updated!", icon="✅")
+                                else:
+                                    st.error(msg)
                             else:
-                                st.error(msg)
-                        else:
-                            st.warning("Please enter a new password.")
+                                st.warning("Enter password.")
             st.divider()
         else:
             st.warning("No users found or connection error.")
@@ -365,13 +397,20 @@ with st.spinner("Checking VPS User Database..."):
         # Add User Form
         st.subheader("Create New User")
         with st.form("new_user_form"):
+            c_new1, c_new2 = st.columns(2)
+            with c_new1:
+                new_first = st.text_input("First Name")
+            with c_new2:
+                new_last = st.text_input("Last Name")
+                
             new_user = st.text_input("Username")
             new_pass = st.text_input("Password", type="password")
             new_role = st.selectbox("Role", ["user", "admin"])
             
             if st.form_submit_button("Create User"):
                 if new_user and new_pass:
-                    success, msg = st.session_state.db_manager.add_companion_user(new_user, new_pass, new_role)
+                    full_name = f"{new_first} {new_last}".strip()
+                    success, msg = st.session_state.db_manager.add_companion_user(new_user, new_pass, new_role, full_name)
                     if success:
                         st.success(msg)
                         time.sleep(1)

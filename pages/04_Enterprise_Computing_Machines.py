@@ -3,18 +3,34 @@ import streamlit as st
 import pandas as pd
 from database_manager import DatabaseManager
 import time
+import getpass
 
 st.set_page_config(layout="wide", page_title="Enterprise Computing Machines", page_icon="🖥️")
 
 st.title("🖥️ Enterprise Computing Machines")
-st.markdown("Inventory of Enterprise Workstations and Servers (SafeList Devices).")
+st.info("""
+**Endpoint Visibility & Infrastructure Health**
+Comprehensive inventory of workstations, servers, and appliances (SafeList Devices). 
+Maintain tactical oversight of the physical and virtual computing fleet by tracking IP/MAC addresses, 
+owner assignments, and operating system distributions. This registry serves as the baseline 
+for security audits and hardware lifecycle management.
+""")
 
 # Initialize Database Manager
-if 'db_manager' not in st.session_state:
+if 'db_manager' not in st.session_state or \
+   not hasattr(st.session_state.db_manager, 'VERSION_ID') or \
+   st.session_state.db_manager.VERSION_ID != DatabaseManager.VERSION_ID:
     st.session_state.db_manager = DatabaseManager()
 
 db = st.session_state.db_manager
 db.render_sidebar_status()
+
+# Success Confirmation
+if st.session_state.get('success_ticket_id'):
+    st.success(f"✅ Ticket #{st.session_state.success_ticket_id} Created Successfully!")
+    if st.button("Dismiss"):
+        st.session_state.success_ticket_id = None
+        st.rerun()
 
 # --- STATE MANAGEMENT ---
 if 'ecm_manage_mode' not in st.session_state:
@@ -53,19 +69,7 @@ def delete_machine(mid):
     return db.execute("DELETE FROM kpu_enterprise_computing_machines WHERE id=%s", (mid,))
 
 def create_machine_ticket(mid, t_type, title, desc, prio, status, user):
-    # Insert new ticket with related_type='computing_machine'
-    if db.mode == "CLOUD":
-        sql = """INSERT INTO tickets (asset_id, related_type, ticket_type, title, description, priority, status, logged_by, created_at, updated_at) 
-                 VALUES (%s, 'computing_machine', %s, %s, %s, %s, %s, %s, NOW(), NOW())"""
-        db.execute(sql, (mid, t_type, title, desc, prio, status, user))
-        res = db.execute("SELECT MAX(id) as id FROM tickets WHERE title=%s AND logged_by=%s", (title, user), fetch=True)
-        return res[0]['id'] if res else None
-    else:
-        sql = """INSERT INTO tickets (asset_id, related_type, ticket_type, title, description, priority, status, logged_by, created_at, updated_at) 
-                 VALUES (?, 'computing_machine', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))"""
-        db.execute(sql, (mid, t_type, title, desc, prio, status, user))
-        res = db.execute("SELECT MAX(id) as id FROM tickets WHERE title=? AND logged_by=?", (title, user), fetch=True)
-        return res[0]['id'] if res else None
+    return db.create_ticket(mid, t_type, title, desc, prio, user, related_type='computing_machine', status=status)
 
 # --- COMPLIANCE HELPERS ---
 def fetch_linked_controls(item_id):
@@ -92,7 +96,7 @@ def fetch_all_iso():
 # --- SIDEBAR TOGGLES ---
 col_head, col_tog = st.columns([0.8, 0.2])
 with col_tog:
-    manage_mode = st.toggle("🛠️ Manage Mode", key="ecm_manage_mode")
+    manage_mode = st.toggle("🛠️ Manage Mode", key="ecm_manage_mode", help="Enable administrative controls to provision or decommission computing assets.")
 
 # --- MANAGE MODE: ADD/EDIT FORM ---
 if manage_mode:
@@ -151,11 +155,7 @@ if st.session_state.ecm_ticket_target:
         
         c3, c4 = st.columns(2)
         t_status = c3.selectbox("Status", ["Open", "In Progress", "Resolved", "Closed"])
-        t_user = c4.text_input("Logged By", value="Admin")
-        
-        c3, c4 = st.columns(2)
-        t_status = c3.selectbox("Status", ["Open", "In Progress", "Resolved", "Closed"])
-        t_user = c4.text_input("Logged By", value="Admin")
+        t_user = c4.text_input("Logged By", value=getpass.getuser())
         
         t_file = st.file_uploader("Attach Document/Image", type=["png", "jpg", "jpeg", "pdf", "docx", "txt"])
         
@@ -164,9 +164,8 @@ if st.session_state.ecm_ticket_target:
             if new_id:
                 if t_file:
                     db.save_attachment(new_id, t_file)
-                st.success("Ticket Created!")
+                st.session_state.success_ticket_id = new_id
                 st.session_state.ecm_ticket_target = None
-                time.sleep(1)
                 st.rerun()
             else:
                 st.error("Failed to create ticket.")
@@ -253,3 +252,9 @@ else:
                     st.session_state.ecm_ticket_target = r
                     st.rerun()
         st.markdown("---")
+
+    with st.expander("🔍 Source Data"):
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        else:
+            st.write("No source data available.")

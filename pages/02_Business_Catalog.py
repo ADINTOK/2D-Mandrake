@@ -1,7 +1,11 @@
 
 import streamlit as st
+import importlib
+import database_manager
+importlib.reload(database_manager)
 from database_manager import DatabaseManager
 import time
+import getpass
 
 # =============================================================================
 # Page: Business Catalog (Landing Page)
@@ -17,14 +21,23 @@ import time
 st.set_page_config(page_title="2D Mandrake - Service Management & Compliance", page_icon="🌳", layout="wide")
 
 st.title("🌳 2D Mandrake - Service Management & Compliance")
+st.info("""
+**Strategic Asset & Service Orchestration**
+Centralized repository for managing the enterprise business hierarchy and technical landscape. 
+Mandrake enforces a strict **5-Level Schema** to ensure full observability: 
+from top-level Business Services down to granular Component Assets. 
+Use this dashboard to track compliance, manage life-cycle tickets, and maintain a "Source of Truth" for the entire infrastructure.
+""")
 st.markdown("""
 Reflects the **strict 5-level schema**:
 `Business Service L1` ➡️ `Business Service L2` ➡️ `Technical Service` ➡️ `Enterprise Asset` ➡️ `Component Asset`
 """)
 
 # Initialize Database Manager
-# Checks for stale instances (missing new methods like get_storage_config) and re-initializes
-if 'db_manager' not in st.session_state or not hasattr(st.session_state.db_manager, 'get_storage_config'):
+# Checks for VERSION_ID to ensure we pick up class updates in the streamlit session
+if 'db_manager' not in st.session_state or \
+   not hasattr(st.session_state.db_manager, 'VERSION_ID') or \
+   st.session_state.db_manager.VERSION_ID != DatabaseManager.VERSION_ID:
     st.session_state.db_manager = DatabaseManager()
 
 db = st.session_state.db_manager
@@ -163,7 +176,7 @@ l1_rows, l2_map, ts_map, ea_map, ca_map = get_hierarchy()
 # Management Toggle
 col_h, col_t = st.columns([0.8, 0.2])
 with col_t:
-    manage_mode = st.toggle("🛠️ Manage Mode", key='manage_mode_toggle')
+    manage_mode = st.toggle("🛠️ Manage Mode", key='manage_mode_toggle', help="Enable administrative controls to add, edit, or delete items in the hierarchy.")
 
 # --- TICKET MODAL ---
 if st.session_state.sc_ticket_target:
@@ -181,7 +194,7 @@ if st.session_state.sc_ticket_target:
         
         c3, c4 = st.columns(2)
         t_status = c3.selectbox("Status", ["Open", "In Progress", "Resolved", "Closed"])
-        t_user = c4.text_input("Logged By", value="Admin")
+        t_user = c4.text_input("Logged By", value=getpass.getuser())
         
         t_file = st.file_uploader("Attach Document/Image", type=["png", "jpg", "jpeg", "pdf", "docx", "txt"])
         

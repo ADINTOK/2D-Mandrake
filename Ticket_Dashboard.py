@@ -1,6 +1,9 @@
 import streamlit as st
-import pandas as pd
+import importlib
+import database_manager
+importlib.reload(database_manager)
 from database_manager import DatabaseManager
+import pandas as pd
 
 # =============================================================================
 # Page: Ticket Dashboard
@@ -12,12 +15,12 @@ from database_manager import DatabaseManager
 # - Filterable Data Table for global ticket management.
 # =============================================================================
 
-st.set_page_config(page_title="Ticket Dashboard", page_icon="📊", layout="wide")
-
-st.title("📊 Ticket Dashboard")
+st.set_page_config(page_title="2D Mandrake - Service Management & Compliance", page_icon="🌳", layout="wide")
 
 # Initialize DB Manager
-if 'db_manager' not in st.session_state:
+if 'db_manager' not in st.session_state or \
+   not hasattr(st.session_state.db_manager, 'VERSION_ID') or \
+   st.session_state.db_manager.VERSION_ID != DatabaseManager.VERSION_ID:
     st.session_state.db_manager = DatabaseManager()
 
 db = st.session_state.db_manager
@@ -25,12 +28,27 @@ db = st.session_state.db_manager
 # Ensure Sidebar Connectivity Status is visible (Sync Buttons)
 db.render_sidebar_status()
 
+# Layout: Title + Action Button
+h_col1, h_col2 = st.columns([0.8, 0.2])
+with h_col1:
+    st.title("📊 Ticket Dashboard")
+with h_col2:
+    st.write("") # Spacer
+    st.write("")
+    st.page_link("pages/01_Create_Ticket.py", label="➕ Create New Ticket", icon="🎫", help="Open Ticket Creation Form")
+
+st.info("""
+**ITSM Operational Oversight**
+Unified visibility into the enterprise service desk. 
+Track incident velocity, identify recurring systemic problems, and manage the Change Advisory Board (CAB) workflow. 
+This dashboard correlates tickets with specific assets from the hierarchy, ensuring full accountability 
+and SLA adherence across the business landscape.
+""")
+
 def execute_query(query, params=None, fetch=False):
     """Executes a query using the global DB manager."""
     return st.session_state.db_manager.execute(query, params, fetch)
 
-# --- Fetch Data ---
-# We fetch all tickets to calculate metrics locally
 # --- Fetch Data ---
 # We fetch all tickets to calculate metrics locally
 sql = """
@@ -56,10 +74,10 @@ active_df = df[df['status'] != 'Closed']
 critical_df = active_df[active_df['priority'] == 'Critical']
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Tickets", len(df))
-col2.metric("Active Tickets", len(active_df))
-col3.metric("Critical Issues", len(critical_df))
-col4.metric("Recently Closed", len(df[df['status'] == 'Closed']))
+col1.metric("Total Tickets", len(df), help="Grand total of all recorded tickets since system inception.")
+col2.metric("Active Tickets", len(active_df), help="Tickets currently in Open or In Progress state.")
+col3.metric("Critical Issues", len(critical_df), help="High-impact incidents requiring immediate response.", delta_color="inverse")
+col4.metric("Recently Closed", len(df[df['status'] == 'Closed']), help="Tickets successfully resolved and closed.")
 
 st.divider()
 
@@ -68,17 +86,17 @@ tab_metrics, tab_problems, tab_cab = st.tabs(["📊 Metrics & List", "🚧 Probl
 
 with tab_metrics:
     # --- Visualizations ---
-c1, c2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-with c1:
-    st.subheader("Tickets by Status")
-    status_counts = df['status'].value_counts()
-    st.bar_chart(status_counts)
+    with c1:
+        st.subheader("Tickets by Status")
+        status_counts = df['status'].value_counts()
+        st.bar_chart(status_counts)
 
-with c2:
-    st.subheader("Tickets by Type")
-    type_counts = df['ticket_type'].value_counts()
-    st.bar_chart(type_counts)
+    with c2:
+        st.subheader("Tickets by Type")
+        type_counts = df['ticket_type'].value_counts()
+        st.bar_chart(type_counts)
 
     # --- Detailed Table with SLA ---
     st.subheader("Global Ticket List")
@@ -95,9 +113,9 @@ with c2:
     # Apply Filters
     filtered_df = df[df['status'].isin(f_status) & df['ticket_type'].isin(f_type)]
 
-    # SLA Calc: Check for breaches (Mock 'now' for pure python or use pd.to_datetime)
+    # SLA Calc: Check for breaches (Mock 'now' for python or use pd.to_datetime)
     if 'due_date' in filtered_df.columns:
-        filtered_df['due_date'] = pd.to_datetime(filtered_df['due_date'])
+        filtered_df['due_date'] = pd.to_datetime(filtered_df['due_date'], format='mixed', errors='coerce')
         now = pd.Timestamp.now()
         # Highlight Logic: If Open and Now > Due Date
         def highlight_breach(row):

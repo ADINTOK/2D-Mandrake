@@ -1,0 +1,6 @@
+
+VERIFICATION RESULT:
+--------------------
+Machines: 272
+Software: 72
+    

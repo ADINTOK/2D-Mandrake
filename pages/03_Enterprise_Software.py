@@ -3,18 +3,34 @@ import streamlit as st
 import pandas as pd
 from database_manager import DatabaseManager
 import time
+import getpass
+from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="Enterprise Software", page_icon="💻")
 
 st.title("💻 Enterprise Software")
-st.markdown("Inventory of Enterprise Software Assets (Layer 7).")
+st.info("""
+**Software Asset Management (SAM) & Compliance**
+Deep-dive into Layer 7 assets across the enterprise. 
+This module tracks software installations, manufacturer details, and security configurations like MFA adoption. 
+Manage the entire software lifecycle—from initial inventory and license entitlement to ISO 27001 compliance verification.
+""")
 
 # Initialize Database Manager
-if 'db_manager' not in st.session_state:
+if 'db_manager' not in st.session_state or \
+   not hasattr(st.session_state.db_manager, 'VERSION_ID') or \
+   st.session_state.db_manager.VERSION_ID != DatabaseManager.VERSION_ID:
     st.session_state.db_manager = DatabaseManager()
 
 db = st.session_state.db_manager
 db.render_sidebar_status()
+
+# Success Confirmation
+if st.session_state.get('success_ticket_id'):
+    st.success(f"✅ Ticket #{st.session_state.success_ticket_id} Created Successfully!")
+    if st.button("Dismiss"):
+        st.session_state.success_ticket_id = None
+        st.rerun()
 
 # --- STATE MANAGEMENT ---
 if 'es_manage_mode' not in st.session_state:
@@ -83,7 +99,7 @@ def fetch_all_iso():
 # --- SIDEBAR TOGGLES ---
 col_head, col_tog = st.columns([0.8, 0.2])
 with col_tog:
-    manage_mode = st.toggle("🛠️ Manage Mode", key="es_manage_mode")
+    manage_mode = st.toggle("🛠️ Manage Mode", key="es_manage_mode", help="Enable administrative controls to add or edit software asset records.")
 
 # --- MANAGE MODE: ADD/EDIT FORM ---
 if manage_mode:
@@ -99,7 +115,7 @@ if manage_mode:
             
             c3, c4 = st.columns(2)
             f_manuf = c3.text_input("Manufacturer", value=target.get('manufacturer', ''))
-            f_mfa = c4.selectbox("MFA Enabled", ["Yes", "No", "Optional", "N/A"], index=["Yes", "No", "Optional", "N/A"].index(target.get('mfa_enabled', 'N/A')) if target.get('mfa_enabled') in ["Yes", "No", "Optional", "N/A"] else 3)
+            f_mfa = c4.selectbox("MFA Enabled", ["Yes", "No", "Optional", "N/A"], index=["Yes", "No", "Optional", "N/A"].index(target.get('mfa_enabled', 'N/A')) if target.get('mfa_enabled') in ["Yes", "No", "Optional", "N/A"] else 3, help="Indicate if Multi-Factor Authentication is enforced for this application.")
             
             submitted = st.form_submit_button("Update Software" if is_edit else "Add Software")
             
@@ -138,11 +154,7 @@ if st.session_state.es_ticket_target:
         
         c3, c4 = st.columns(2)
         t_status = c3.selectbox("Status", ["Open", "In Progress", "Resolved", "Closed"])
-        t_user = c4.text_input("Logged By", value="Admin")
-        
-        c3, c4 = st.columns(2)
-        t_status = c3.selectbox("Status", ["Open", "In Progress", "Resolved", "Closed"])
-        t_user = c4.text_input("Logged By", value="Admin")
+        t_user = c4.text_input("Logged By", value=getpass.getuser())
         
         t_file = st.file_uploader("Attach Document/Image", type=["png", "jpg", "jpeg", "pdf", "docx", "txt"])
         
@@ -151,9 +163,8 @@ if st.session_state.es_ticket_target:
             if new_id:
                 if t_file:
                     db.save_attachment(new_id, t_file)
-                st.success("Ticket Created!")
+                st.session_state.success_ticket_id = new_id
                 st.session_state.es_ticket_target = None
-                time.sleep(1)
                 st.rerun()
             else:
                 st.error("Failed to create ticket.")
@@ -242,6 +253,9 @@ with tab_inv:
     else:
         st.info("No software assets found.")
 
+    with st.expander("🔍 Source Data"):
+        st.dataframe(df, use_container_width=True)
+
 with tab_lic:
     st.markdown("### Software Licenses")
     
@@ -314,4 +328,9 @@ with tab_lic:
                             st.rerun()
     else:
         st.info("No licenses tracked.")
-```
+
+    with st.expander("🔍 Source Data"):
+        if lics:
+            st.dataframe(pd.DataFrame(lics), use_container_width=True)
+        else:
+            st.write("No data available.")

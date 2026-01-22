@@ -32,12 +32,9 @@ except ImportError:
 class DatabaseManager:
     """
     Manages hybrid database connections (Cloud MySQL + Local SQLite).
-    
-    Attributes:
-        mode (str): Current operating mode ("CLOUD" or "LOCAL").
-        local_db (str): Path to the local SQLite database file.
-        status_msg (str): User-facing status message describing connection state.
     """
+    VERSION_ID = "2.1.V01" # Incremented to force session state reset
+    
     def __init__(self, secrets_override=None):
         """
         Initializes the manager, tests cloud connection, and sets initial mode.
@@ -51,7 +48,18 @@ class DatabaseManager:
         self.ssh_tunnel = None # Helper instance
         self.ssh_local_port = None
         
+        # Aggressive Secrets Loading (Bypass stale st.secrets)
+        if not self.secrets_override:
+            try:
+                import toml
+                path = ".streamlit/secrets.toml"
+                if os.path.exists(path):
+                    self.secrets_override = toml.load(path)
+            except:
+                pass
+        
         # Try Cloud First
+        self.last_error = None
         if self._test_cloud_connection():
             self.mode = "CLOUD"
             src_label = "Primary" if self.cloud_source == "PRIMARY" else "Secondary (Backup)"
@@ -64,7 +72,10 @@ class DatabaseManager:
             self.sync()
         else:
             self.mode = "LOCAL"
-            self.status_msg = "🟠 Offline Mode (Local Cache)"
+            if not self.last_error:
+                self.status_msg = f"🟠 Offline Mode (No Clouds Configured) [v{self.VERSION_ID}]"
+            else:
+                self.status_msg = f"🟠 Offline Mode ({self.last_error}) [v{self.VERSION_ID}]"
             self._ensure_local_schema()
 
     def sync(self):
@@ -109,72 +120,304 @@ class DatabaseManager:
             if conn and conn.is_connected():
                 conn.close()
                 return True
-        except:
+            else:
+                self.last_error = "Connection Failed"
+        except Exception as e:
+            self.last_error = str(e)
             return False
         return False
 
     def _get_cloud_conn(self):
         """
         Establishes a connection to Cloud MySQL. Implement Failover.
-        Priority: 1. [mysql] (Primary) -> 2. [mysql_backup] (Backpup)
-        Supports SSH Tunneling if configured.
+        Priority: 1. [mysql] (Primary) -> 2. [mysql_backup] (Backup)
         """
-        
-        # Use explicit override if provided (fixes stale st.secrets cache)
         active_secrets = self.secrets_override if self.secrets_override else st.secrets
 
-        def connect_with_ssh_check(config, is_vps=False):
-            """Helper to handle connection with potential SSH wrapper"""
+        # 1. Try Primary
+        if "mysql" in active_secrets:
+            try:
+                conn = self._connect_to_source(active_secrets["mysql"])
+                if conn and conn.is_connected():
+                    self.cloud_source = "PRIMARY"
+                    print("Connected to Primary Cloud Node")
+                    return conn
+            except Exception as e:
+                print(f"Primary Cloud Connection Attempt Failed: {e}")
+
+        # 2. Try Backup
+        if "mysql_backup" in active_secrets:
+            try:
+                conn = self._connect_to_source(active_secrets["mysql_backup"])
+                if conn and conn.is_connected():
+                    self.cloud_source = "BACKUP"
+                    print("Connected to Backup Cloud Node")
+                    return conn
+            except Exception as e:
+                print(f"Backup Cloud Connection Attempt Failed: {e}")
+
+        return None
+
+    def ensure_cloud_schema(self, target="PRIMARY"):
+        """
+        Creates missing system tables in the Cloud Database (Platform repair).
+        Uses MySQL DDL.
+        """
+        config = st.secrets["mysql"] if target == "PRIMARY" else st.secrets["mysql_backup"]
+        try:
+            conn = self._connect_to_source(config)
+            cur = conn.cursor()
             
-            # Check for SSH config if it's the VPS or marked for SSH
-            # We assume 'mysql_backup' IS the VPS based on context, 
-            # OR we check if [ssh] matches the host.
+            # --- DDL Definitions (MySQL Compatible) ---
+            # Using IF NOT EXISTS
             
-            use_ssh = False
-            if 'ssh' in active_secrets and config['host'] == active_secrets['ssh']['host']:
-                use_ssh = True
+            # 1. Assets
+            cur.execute("""CREATE TABLE IF NOT EXISTS assets (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255),
+                parent_id INT,
+                type VARCHAR(50),
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )""")
             
-            # Cleanup old tunnel if exists and switching hosts/failure
-            if self.ssh_tunnel and (not use_ssh or self.ssh_tunnel.ssh_host != config['host']):
-                try: self.ssh_tunnel.stop() 
+            # 2. Tickets (Includes new columns)
+            cur.execute("""CREATE TABLE IF NOT EXISTS tickets (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                asset_id INT,
+                related_type VARCHAR(50),
+                ticket_type VARCHAR(50),
+                title VARCHAR(255),
+                description TEXT,
+                status VARCHAR(50),
+                priority VARCHAR(50),
+                logged_by VARCHAR(100),
+                assigned_to VARCHAR(100),
+                due_date TIMESTAMP NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )""")
+
+            # 3. Ticket Assets (Join Table)
+            cur.execute("""CREATE TABLE IF NOT EXISTS ticket_assets (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ticket_id INT,
+                asset_id INT,
+                asset_type VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_ticket (ticket_id)
+            )""")
+            
+            # 4. Attachments
+            cur.execute("""CREATE TABLE IF NOT EXISTS ticket_attachments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ticket_id INT,
+                file_name VARCHAR(255),
+                file_path TEXT,
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_ticket_att (ticket_id)
+            )""")
+            
+            # 5. Core KPU Tables (Hierarchy)
+            cur.execute("""CREATE TABLE IF NOT EXISTS kpu_business_services_level1 (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 name VARCHAR(255), 
+                 description TEXT, 
+                 owner VARCHAR(100), 
+                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
+            cur.execute("""CREATE TABLE IF NOT EXISTS kpu_business_services_level2 (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 business_service_level1_id INT,
+                 name VARCHAR(255), 
+                 description TEXT, 
+                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            cur.execute("""CREATE TABLE IF NOT EXISTS kpu_technical_services (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 business_service_level2_id INT, 
+                 name VARCHAR(255), 
+                 description TEXT, 
+                 sla_level VARCHAR(50), 
+                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            cur.execute("""CREATE TABLE IF NOT EXISTS kpu_enterprise_assets (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 technical_service_id INT, 
+                 name VARCHAR(255), 
+                 asset_type VARCHAR(50), 
+                 location VARCHAR(100), 
+                 status VARCHAR(50), 
+                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            cur.execute("""CREATE TABLE IF NOT EXISTS kpu_component_assets (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 enterprise_asset_id INT, 
+                 name VARCHAR(255), 
+                 component_type VARCHAR(50), 
+                 version VARCHAR(50), 
+                 description TEXT, 
+                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
+            cur.execute("""CREATE TABLE IF NOT EXISTS kpu_enterprise_software (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                asset_id VARCHAR(50),
+                name VARCHAR(255),
+                manufacturer VARCHAR(100),
+                mfa_enabled VARCHAR(10),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
+            cur.execute("""CREATE TABLE IF NOT EXISTS kpu_enterprise_computing_machines (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                asset_id VARCHAR(50),
+                name VARCHAR(255),
+                ip_address VARCHAR(50),
+                mac_address VARCHAR(50),
+                owner VARCHAR(100),
+                os_type VARCHAR(50),
+                location VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
+            cur.execute("""CREATE TABLE IF NOT EXISTS software_licenses (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                software_asset_id INT,
+                license_key VARCHAR(255),
+                vendor VARCHAR(255),
+                total_seats INT DEFAULT 1,
+                used_seats INT DEFAULT 0,
+                expiration_date DATE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            # 6. Compliance / Controls
+            cur.execute("""CREATE TABLE IF NOT EXISTS problems (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(255),
+                description TEXT,
+                root_cause_analysis TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
+            cur.execute("""CREATE TABLE IF NOT EXISTS iso_controls (
+                id VARCHAR(50) PRIMARY KEY,
+                description TEXT,
+                category VARCHAR(100),
+                theme VARCHAR(100)
+            )""")
+            
+            cur.execute("""CREATE TABLE IF NOT EXISTS nist_controls (
+                id VARCHAR(50) PRIMARY KEY,
+                function VARCHAR(100),
+                category VARCHAR(100),
+                subcategory VARCHAR(100),
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            cur.execute("""CREATE TABLE IF NOT EXISTS policies (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255),
+                category VARCHAR(100),
+                summary TEXT,
+                content TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            cur.execute("""CREATE TABLE IF NOT EXISTS sla_policies (
+                priority VARCHAR(50) PRIMARY KEY,
+                response_time_minutes INT,
+                resolution_time_minutes INT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )""")
+
+            # 7. Mappings
+            cur.execute("""CREATE TABLE IF NOT EXISTS asset_controls (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                asset_id INT,
+                control_id VARCHAR(50),
+                related_type VARCHAR(50),
+                status VARCHAR(50),
+                notes TEXT,
+                linked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            cur.execute("""CREATE TABLE IF NOT EXISTS asset_nist_controls (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                asset_id INT,
+                control_id VARCHAR(50),
+                related_type VARCHAR(50),
+                status VARCHAR(50),
+                notes TEXT,
+                linked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            cur.execute("""CREATE TABLE IF NOT EXISTS policy_nist_mappings (
+                policy_id INT,
+                nist_control_id VARCHAR(50),
+                PRIMARY KEY (policy_id, nist_control_id)
+            )""")
+
+            cur.execute("""CREATE TABLE IF NOT EXISTS companion_users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(100) UNIQUE,
+                password_hash VARCHAR(255),
+                full_name VARCHAR(255),
+                email VARCHAR(255),
+                role VARCHAR(50) DEFAULT 'user',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
+            # Auto-Migration: Add is_active
+            try:
+                cur.execute("SELECT is_active FROM companion_users LIMIT 1")
+                cur.fetchall()
+            except:
+                try:
+                    cur.execute("ALTER TABLE companion_users ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
                 except: pass
-                self.ssh_tunnel = None
 
-            db_host = config['host']
-            db_port = config.get("port", 3306)
+            # Auto-Migration: Add role
+            try:
+                cur.execute("SELECT role FROM companion_users LIMIT 1")
+                cur.fetchall()
+            except:
+                try:
+                    cur.execute("ALTER TABLE companion_users ADD COLUMN role VARCHAR(50) DEFAULT 'user'")
+                except: pass
 
-            # Establish Tunnel if needed
-            if use_ssh:
-                if not self.ssh_tunnel:
-                    print(f"Opening SSH Tunnel to {db_host}...")
-                    ssh_cfg = active_secrets['ssh']
-                    try:
-                        self.ssh_tunnel = SSHTunnel(
-                            ssh_host=ssh_cfg['host'],
-                            ssh_user=ssh_cfg['user'],
-                            ssh_password=ssh_cfg['password'],
-                            remote_bind_address=('127.0.0.1', 3306),
-                            ssh_port=ssh_cfg.get('port', 22)
-                        )
-                        self.ssh_local_port = self.ssh_tunnel.start()
-                        print(f"SSH Tunnel Established on Port {self.ssh_local_port}")
-                    except Exception as e:
-                        print(f"SSH Tunnel Failed: {e}")
-                        return None
-                
-                # Override for localhost connection
-                db_host = '127.0.0.1'
-                db_port = self.ssh_local_port
+            # Auto-Migration: Add full_name
+            try:
+                cur.execute("SELECT full_name FROM companion_users LIMIT 1")
+                cur.fetchall()
+            except:
+                try:
+                    cur.execute("ALTER TABLE companion_users ADD COLUMN full_name VARCHAR(255)")
+                except: pass
 
-            # Connect
-            return mysql.connector.connect(
-                host=db_host, 
-                user=config['user'], 
-                password=config['password'],
-                database=config['database'], 
-                port=db_port,
-                connection_timeout=5
-            )
+            cur.execute("""CREATE TABLE IF NOT EXISTS ticket_comments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ticket_id INT,
+                author VARCHAR(100),
+                content TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_ticket_comments (ticket_id)
+            )""")
+
+            conn.commit()
+            conn.close()
+            return True, "Schema Repair Complete."
+            
+        except Exception as e:
+            return False, str(e)
 
         # 1. Try Primary
         if 'mysql' in active_secrets:
@@ -301,7 +544,7 @@ class DatabaseManager:
                 # Let's switch mode if connection completely fails
                 print(f"Cloud Error: {e}. Switching to Local.")
                 self.mode = "LOCAL"
-                self.status_msg = "🟠 Offline Mode (Fallback)"
+                self.status_msg = f"🟠 Offline Mode ({str(e)}) [Fallback]"
                 return self.execute(query, params, fetch)
 
         # 2. LOCAL MODE
@@ -378,9 +621,20 @@ class DatabaseManager:
             status TEXT,
             priority TEXT,
             logged_by TEXT,
+            assigned_to TEXT,
+            due_date TIMESTAMP,
             created_at TIMESTAMP,
             updated_at TIMESTAMP
         )""")
+        
+        # Migration: Ensure new columns exist (SQLite doesn't support IF NOT EXISTS in ADD COLUMN standardly well in all versions, simple try/except is best)
+        try:
+            cur.execute("ALTER TABLE tickets ADD COLUMN due_date TIMESTAMP")
+        except: pass
+        
+        try:
+            cur.execute("ALTER TABLE tickets ADD COLUMN assigned_to TEXT")
+        except: pass
 
         # Attachments
         cur.execute("""CREATE TABLE IF NOT EXISTS ticket_attachments (
@@ -490,12 +744,35 @@ class DatabaseManager:
              created_at TIMESTAMP
         )""")
 
-        # --- Companion App Users (Local Cache) ---
-        cur.execute("""CREATE TABLE IF NOT EXISTS companion_users (
+        cur.execute("""CREATE TABLE IF NOT EXISTS kpu_enterprise_software (
             id INTEGER PRIMARY KEY,
-            username TEXT UNIQUE,
-            password_hash TEXT,
-            role TEXT,
+            asset_id TEXT,
+            name TEXT,
+            manufacturer TEXT,
+            mfa_enabled TEXT,
+            created_at TIMESTAMP
+        )""")
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS kpu_enterprise_computing_machines (
+            id INTEGER PRIMARY KEY,
+            asset_id TEXT,
+            name TEXT,
+            ip_address TEXT,
+            mac_address TEXT,
+            owner TEXT,
+            os_type TEXT,
+            location TEXT,
+            created_at TIMESTAMP
+        )""")
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS software_licenses (
+            id INTEGER PRIMARY KEY,
+            software_asset_id INTEGER,
+            license_key TEXT,
+            vendor TEXT,
+            total_seats INTEGER,
+            used_seats INTEGER,
+            expiration_date DATE,
             created_at TIMESTAMP
         )""")
 
@@ -745,22 +1022,106 @@ class DatabaseManager:
             
             # Cloud vs Local SQL
             if self.mode == "CLOUD":
+                conn = self._get_cloud_conn()
+                if not conn:
+                    return None
+                
+                cursor = conn.cursor()
                 sql = """
                     INSERT INTO tickets (asset_id, ticket_type, title, description, priority, logged_by, related_type, due_date, status, created_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 """
-                self.execute(sql, (asset_id, ticket_type, title, description, priority, logged_by, related_type, due_date, status))
-                
-                # Get ID
-                rows = self.execute("SELECT LAST_INSERT_ID()", fetch=True)
-                return rows[0]['LAST_INSERT_ID()'] if rows else None
+                cursor.execute(sql, (asset_id, ticket_type, title, description, priority, logged_by, related_type, due_date, status))
+                conn.commit()
+                last_id = cursor.lastrowid
+                conn.close()
+                return last_id
             else:
+                conn = self._get_local_conn()
+                cursor = conn.cursor()
                 sql = """
                     INSERT INTO tickets (asset_id, ticket_type, title, description, priority, logged_by, related_type, due_date, status, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 """
-                self.execute(sql, (asset_id, ticket_type, title, description, priority, logged_by, related_type, due_date, status))
-                return self.cursor.lastrowid
+                cursor.execute(sql, (asset_id, ticket_type, title, description, priority, logged_by, related_type, due_date, status))
+                conn.commit()
+                last_id = cursor.lastrowid
+                conn.close()
+                return last_id
+        except Exception as e:
+            print(f"Error creating ticket: {e}")
+            return None
+
+    def create_ticket_with_assets(self, title, description, priority, status, assigned_to, due_date, asset_list, logged_by="User"):
+        """
+        Creates a ticket and links multiple assets to it.
+        Args:
+            asset_list: List of dicts [{'id': 1, 'type': 'computing_machine'}, ...]
+        """
+        print(f"Creating Ticket '{title}' with {len(asset_list)} assets...")
+        
+        # 1. Create the Ticket Parent Record
+        # We need a primary asset for the main record (legacy support), pick the first one if available
+        primary_asset_id = asset_list[0]['id'] if asset_list else None
+        primary_asset_type = asset_list[0]['type'] if asset_list else None
+        
+        try:
+            # We use the existing create_ticket method logic but slightly adapted / or just direct SQL here to include assigned_to
+            # Let's do direct SQL to support new columns 'assigned_to'
+            
+            if self.mode == "CLOUD":
+                conn = self._get_cloud_conn()
+                cursor = conn.cursor()
+                sql = """
+                    INSERT INTO tickets (ticket_type, title, description, priority, status, logged_by, assigned_to, due_date, asset_id, related_type, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                """
+                cursor.execute(sql, ("Incident", title, description, priority, status, logged_by, assigned_to, due_date, primary_asset_id, primary_asset_type))
+                conn.commit()
+                ticket_id = cursor.lastrowid
+                conn.close()
+            else:
+                # Local
+                conn = self._get_local_conn()
+                cursor = conn.cursor()
+                sql = """
+                    INSERT INTO tickets (ticket_type, title, description, priority, status, logged_by, assigned_to, due_date, asset_id, related_type, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """
+                cursor.execute(sql, ("Incident", title, description, priority, status, logged_by, assigned_to, due_date, primary_asset_id, primary_asset_type))
+                conn.commit()
+                ticket_id = cursor.lastrowid
+                conn.close()
+
+            if not ticket_id:
+                return False, "Failed to generate Ticket ID."
+
+            # 2. Link Assets (ticket_assets table)
+            if asset_list:
+                if self.mode == "CLOUD":
+                    sql_link = "INSERT INTO ticket_assets (ticket_id, asset_id, asset_type, created_at) VALUES (%s, %s, %s, NOW())"
+                    for item in asset_list:
+                         self.execute(sql_link, (ticket_id, item['id'], item['type']))
+                else:
+                    sql_link = "INSERT INTO ticket_assets (ticket_id, asset_id, asset_type, created_at) VALUES (?, ?, ?, datetime('now'))"
+                    for item in asset_list:
+                         self.execute(sql_link, (ticket_id, item['id'], item['type']))
+            
+            # Commit handled by execute usually if autocommit? 
+            # execute wrapper doesn't explicitly commit unless we check.
+            # Local execute commits. Cloud execute?
+            # Let's force commit if needed. The wrapper _get_local_conn usually returns a connection that we commit on close?
+            # Actually self.execute usually handles commit for INSERT/UPDATE if implied.
+            # Checking execute implementation:
+            # if self.mode == 'CLOUD': conn.commit() is called.
+            # if self.mode == 'LOCAL': self.local_conn.commit() is called.
+            # So we are good.
+            
+            return True, ticket_id
+            
+        except Exception as e:
+            print(f"Create Ticket Error: {e}")
+            return False, str(e)
                 
         except Exception as e:
             print(f"Error creating ticket: {e}")
@@ -843,7 +1204,7 @@ class DatabaseManager:
             print(f"Error fetching users from VPS: {e}")
             return []
 
-    def add_companion_user(self, username, password, role="user"):
+    def add_companion_user(self, username, password, role="user", full_name=""):
         """
         Creates a new user for the Companion App on the VPS.
         """
@@ -866,13 +1227,36 @@ class DatabaseManager:
             # Hash password using PBKDF2-SHA256
             pw_hash = pbkdf2_sha256.hash(password)
             
-            sql = "INSERT INTO companion_users (username, password_hash, role) VALUES (%s, %s, %s)"
-            cursor.execute(sql, (username, pw_hash, role))
+            sql = "INSERT INTO companion_users (username, password_hash, role, full_name, is_active) VALUES (%s, %s, %s, %s, TRUE)"
+            cursor.execute(sql, (username, pw_hash, role, full_name))
             conn.commit()
             cursor.close()
             conn.close()
             return True, "User created successfully on VPS."
             
+        except Exception as e:
+            if conn: conn.close()
+            return False, str(e)
+
+    def update_companion_user_status(self, username, is_active):
+        """
+        Updates the active status of a Companion App user.
+        """
+        conn = self._get_vps_conn()
+        if not conn:
+             return False, "Could not connect to VPS database."
+        
+        try:
+            cursor = conn.cursor()
+            val = 1 if is_active else 0
+            
+            sql = "UPDATE companion_users SET is_active=%s WHERE username=%s"
+            cursor.execute(sql, (val, username))
+            conn.commit()
+            
+            cursor.close()
+            conn.close()
+            return True, f"User {'enabled' if is_active else 'disabled'} successfully."
         except Exception as e:
             if conn: conn.close()
             return False, str(e)
@@ -926,13 +1310,78 @@ class DatabaseManager:
             if conn: conn.close()
             return False, str(e)
 
+    def _connect_to_source(self, config):
+        """
+        Helper to establish connection to a specific source config, handling SSH if needed.
+        """
+        # 1. Check if this host requires SSH
+        use_ssh = False
+        ssh_conf = self.secrets_override.get("ssh") if self.secrets_override else st.secrets.get("ssh")
+        
+        if ssh_conf and config['host'] == ssh_conf['host']:
+            use_ssh = True
+            
+        if use_ssh:
+             # Ensure Tunnel is open
+             # We reuse the existing tunnel if it matches, or restart
+             if not self.ssh_tunnel or self.ssh_tunnel.ssh_host != ssh_conf['host']:
+                 if self.ssh_tunnel: self.ssh_tunnel.stop()
+                 from utils.sshtunnel_helper import SSHTunnel
+                 self.ssh_tunnel = SSHTunnel(
+                    ssh_host=ssh_conf['host'],
+                    ssh_user=ssh_conf['user'],
+                    ssh_password=ssh_conf['password'],
+                    remote_bind_address=('127.0.0.1', 3306)
+                 )
+                 self.ssh_local_port = self.ssh_tunnel.start()
+            
+             # Connect via Localhost
+             conn_params = dict(config)
+             conn_params['host'] = '127.0.0.1'
+             conn_params['port'] = self.ssh_local_port
+             return mysql.connector.connect(**conn_params)
+        else:
+            # Direct Connect
+            return mysql.connector.connect(**config)
+
     # --- CLOUD REPLICATION ---
-    def replicate_cloud_db(self, direction="PRIMARY_TO_SECONDARY"):
+    def get_tables(self, source="PRIMARY"):
+        """
+        Fetches the list of tables from the specified cloud database.
+        
+        Args:
+            source (str): "PRIMARY" or "SECONDARY"
+            
+        Returns:
+            list[str]: List of table names. Raises Exception on error.
+        """
+        if "mysql" not in st.secrets or "mysql_backup" not in st.secrets:
+            raise ValueError("Missing database secrets.")
+
+        config = st.secrets["mysql"] if source == "PRIMARY" else st.secrets["mysql_backup"]
+        
+        conn = None
+        try:
+            conn = self._connect_to_source(config)
+            cursor = conn.cursor()
+            cursor.execute("SHOW TABLES")
+            rows = cursor.fetchall()
+            tables = [r[0] for r in rows]
+            cursor.close()
+            conn.close()
+            return tables
+        except Exception as e:
+            if conn: conn.close()
+            # Re-raise to let caller handle/display
+            raise e
+
+    def replicate_cloud_db(self, direction="PRIMARY_TO_SECONDARY", tables=None):
         """
         Replicates data between Primary and Secondary Cloud Databases.
         
         Args:
             direction (str): "PRIMARY_TO_SECONDARY" or "SECONDARY_TO_PRIMARY"
+            tables (list, optional): Specific tables to sync. If None, syncs ALL tables found in Source.
             
         Returns:
             tuple: (success (bool), message (str))
@@ -943,31 +1392,57 @@ class DatabaseManager:
         primary_cfg = st.secrets["mysql"]
         secondary_cfg = st.secrets["mysql_backup"]
         
-        # Determine Source and Target
+        # Determine Source and Target context for logging
         if direction == "PRIMARY_TO_SECONDARY":
             src_cfg = primary_cfg
             tgt_cfg = secondary_cfg
+            src_label = "PRIMARY"
             lbl = "Primary -> Secondary"
         else:
             src_cfg = secondary_cfg
             tgt_cfg = primary_cfg
+            src_label = "SECONDARY"
             lbl = "Secondary -> Primary"
             
         print(f"Starting Cloud Replication: {lbl}")
         
-        tables = ['assets', 'tickets', 'iso_controls', 'nist_controls', 'policies', 
-                  'asset_controls', 'asset_nist_controls', 'policy_nist_mappings', 'ticket_attachments',
-                  'kpu_business_services_level1', 'kpu_business_services_level2', 'kpu_technical_services', 
-                  'kpu_enterprise_assets', 'kpu_component_assets', 'kpu_enterprise_software', 
-                  'kpu_enterprise_computing_machines', 'companion_users']
+        # Determine Tables to Sync
+        if not tables:
+            # Fetch all from source
+            try:
+                tables = self.get_tables(src_label)
+            except Exception as e:
+                return False, f"Failed to fetch table list from {src_label}: {e}"
+                
+            if not tables:
+                return False, f"No tables found in {src_label}."
+            print(f"Auto-detected {len(tables)} tables to sync.")
+        else:
+            # Sync user provided list
+            pass
                   
         src_conn = None
         tgt_conn = None
         
         try:
-            # Connect
-            src_conn = mysql.connector.connect(**src_cfg)
-            tgt_conn = mysql.connector.connect(**tgt_cfg)
+            # Connect using helper to handle SSH for EITHER side
+            src_conn = self._connect_to_source(src_cfg)
+            
+            # NOTE: If we need SSH for BOTH, single tunnel object might be an issue if they are different hosts?
+            # But usually Primary/Secondary imply different hosts. 
+            # If one is SSH and one is Direct, we are fine.
+            # If BOTH are SSH to SAME host (localhost), we are fine.
+            # If BOTH are SSH to DIFFERENT hosts (rare setup for this app context), 
+            # our simple self.ssh_tunnel singleton would thrash.
+            # Assumption: Only VPS requires SSH. Hostek is Direct.
+            
+            # Wait, if we use the singleton self.ssh_tunnel, and we just connected to SRC (e.g. VPS),
+            # and now we connect to TGT (Hostek), the tunnel remains up but unused.
+            # If we connect to SRC (Hostek), tunnel is not started.
+            # Then TGT (VPS) needs tunnel. _connect_to_source will start it.
+            # This is fine.
+            
+            tgt_conn = self._connect_to_source(tgt_cfg)
             
             src_cur = src_conn.cursor(dictionary=True)
             tgt_cur = tgt_conn.cursor()
@@ -975,33 +1450,51 @@ class DatabaseManager:
             # Disable FK checks on target for bulk load
             tgt_cur.execute("SET FOREIGN_KEY_CHECKS=0;")
             
+            success_count = 0
+            
             for tbl in tables:
                 try:
                     # 1. Fetch Source
-                    src_cur.execute(f"SELECT * FROM {tbl}")
+                    src_cur.execute(f"SELECT * FROM `{tbl}`") # Backticks for safety
                     rows = src_cur.fetchall()
                     
-                    if not rows: continue
+                    if not rows: 
+                        # Even if empty, we might want to ensure table exists on target?
+                        # For now, skip empty data sync, but creating table schema is separate.
+                        # Ideally, we should dump schema too.
+                        # PROPOSAL: Use 'CREATE TABLE LIKE' if missing? 
+                        # Let's try basic CREATE LIKE
+                        try:
+                            # Cross-server create like is hard without federation.
+                            # We'll assume schema exists or we rely on 'REPLACE INTO' failing if table missing.
+                            pass
+                        except:
+                            pass
+                        continue
                     
                     # 2. Prep Insert
                     cols = list(rows[0].keys())
-                    col_names = ", ".join(cols)
+                    col_names = ", ".join([f"`{c}`" for c in cols])
                     placeholders = ", ".join(["%s"] * len(cols))
                     
-                    # Using REPLACE INTO to handle updates/inserts
-                    sql = f"REPLACE INTO {tbl} ({col_names}) VALUES ({placeholders})"
+                    # Using INSERT IGNORE to handle updates presence without overwriting
+                    sql = f"INSERT IGNORE INTO `{tbl}` ({col_names}) VALUES ({placeholders})"
                     
                     # 3. Bulk Execute
                     data = [tuple(r.values()) for r in rows]
                     tgt_cur.executemany(sql, data)
                     print(f"Replicated {len(data)} rows for {tbl}")
+                    success_count += 1
                     
                 except Exception as e:
                     print(f"Error replicating {tbl}: {e}")
+                    # If table doesn't exist on target, this will fail.
+                    # We could try to create it, but getting schema structure across connection is complex in python.
+                    # We will log it.
             
             tgt_cur.execute("SET FOREIGN_KEY_CHECKS=1;")
             tgt_conn.commit()
-            return True, f"Replication Complete ({lbl})"
+            return True, f"Replication Complete ({lbl}). Synced {success_count} tables."
             
         except Exception as e:
             return False, str(e)
@@ -1012,6 +1505,11 @@ class DatabaseManager:
     def render_sidebar_status(self):
         """Renders the Cloud Connection status and Sync button in the Sidebar."""
         with st.sidebar:
+            # Restore KPU Branding
+            if os.path.exists("logo.png"):
+                st.image("logo.png", use_container_width=True)
+            elif os.path.exists("dubay_logo.png"):
+                st.image("dubay_logo.png", use_container_width=True)
             st.divider()
             st.markdown("### ☁️ Connectivity")
             
@@ -1020,9 +1518,20 @@ class DatabaseManager:
                 st.success(f"{self.status_msg}")
             else:
                 st.warning(f"{self.status_msg}")
+                if st.button("🔌 Reconnect Cloud", use_container_width=True, help="Force a connection test to the Cloud Database"):
+                    if self._test_cloud_connection():
+                        self.mode = "CLOUD"
+                        self.status_msg = "🟢 Cloud Reconnected!"
+                        st.rerun()
+                    else:
+                        st.error("Cloud still unreachable.")
+                
+                if st.button("🔄 System Reload", use_container_width=True, help="Complete re-initialization of the Database Manager"):
+                    st.session_state.db_manager = DatabaseManager()
+                    st.rerun()
             
             # Sync Button (Cloud Database)
-            if st.button("🔄 Sync Cloud DB", use_container_width=True):
+            if st.button("🔄 Sync Cloud DB", use_container_width=True, key="sidebar_sync_cloud_btn"):
                 with st.spinner("Syncing Cloud Data..."):
                     success, msg = self.sync()
                     if success:
@@ -1033,7 +1542,7 @@ class DatabaseManager:
                         st.error(f"❌ {msg}")
             
             # File Sync Button (Network)
-            if st.button("📂 Sync Files (Net)", use_container_width=True, help="Sync files between Local Cache and Network Path"):
+            if st.button("📂 Sync Files (Net)", use_container_width=True, help="Sync files between Local Cache and Network Path", key="sidebar_sync_files_btn"):
                 with st.spinner("Syncing Files..."):
                     success, msg = self.sync_files()
                     if success:
@@ -1079,3 +1588,50 @@ class DatabaseManager:
             else:
                 st.error("❌ 2D Pentester Not Found")
                 st.caption("Clone `2D_Pentester` to parent directory.")
+
+    # --- POLICY MANAGEMENT ---
+    def create_policy(self, name, category, summary, content):
+        """Creates a new Governance Policy."""
+        sql_cloud = "INSERT INTO policies (name, category, summary, content, created_at) VALUES (%s, %s, %s, %s, NOW())"
+        sql_local = "INSERT INTO policies (name, category, summary, content, created_at) VALUES (?, ?, ?, ?, datetime('now'))"
+        
+        try:
+            if self.mode == "CLOUD":
+                self.execute(sql_cloud, (name, category, summary, content))
+            else:
+                self.execute(sql_local, (name, category, summary, content))
+            return True, "Policy Created Successfully"
+        except Exception as e:
+            return False, str(e)
+
+    def get_policies(self):
+        """Fetches all policies."""
+        return self.execute("SELECT * FROM policies ORDER BY created_at DESC", fetch=True) or []
+
+    def get_nist_controls(self):
+        """Fetches all NIST controls for mapping."""
+        # Ensure table exists first if not handled
+        return self.execute("SELECT * FROM nist_controls ORDER BY id", fetch=True) or []
+    
+    def link_policy_to_nist(self, policy_id, nist_control_id):
+        """Maps a policy to a NIST control."""
+        # Check existence
+        existing = self.execute(f"SELECT * FROM policy_nist_mappings WHERE policy_id={policy_id} AND nist_control_id='{nist_control_id}'", fetch=True)
+        if existing: return True # Already linked
+        
+        sql_cloud = "INSERT INTO policy_nist_mappings (policy_id, nist_control_id) VALUES (%s, %s)"
+        sql_local = "INSERT INTO policy_nist_mappings (policy_id, nist_control_id) VALUES (?, ?)"
+        
+        try:
+            if self.mode == "CLOUD":
+                self.execute(sql_cloud, (policy_id, nist_control_id))
+            else:
+                self.execute(sql_local, (policy_id, nist_control_id))
+            return True
+        except Exception as e:
+            print(f"Link Error: {e}")
+            return False
+
+    def get_policy_mappings(self, policy_id):
+        """Get linked NIST controls for a policy."""
+        return self.execute(f"SELECT nist_control_id FROM policy_nist_mappings WHERE policy_id={policy_id}", fetch=True) or []

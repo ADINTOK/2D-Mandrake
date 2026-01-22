@@ -4,6 +4,13 @@ import os
 st.set_page_config(page_title="Documentation", page_icon="📚", layout="wide")
 
 st.title("📚 Application Documentation")
+st.info("""
+**The Operational Blueprint**
+Centralized repository for technical specifications, user guides, and ITIL standards. 
+This handbook serves as the "Ground Truth" for administrators and developers, 
+documenting everything from the hierarchical data model to the live database schema.
+Maintain operational consistency by following these standardized procedures.
+""")
 
 def read_file(filename):
     """Reads a markdown file from the root directory."""

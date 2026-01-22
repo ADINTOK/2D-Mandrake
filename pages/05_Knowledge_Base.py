@@ -15,6 +15,12 @@ import time
 st.set_page_config(page_title="Knowledge Base", page_icon="📚", layout="wide")
 
 st.title("📚 Knowledge Base")
+st.info("""
+**Self-Service & Institutional Wisdom**
+A centralized repository for solutions, troubleshooters, and process documentation. 
+Empower users to resolve common issues autonomously, reducing the load on the service desk 
+while preserving critical institutional knowledge. Search for existing solutions or publish new findings.
+""")
 
 # Initialize DB
 if 'db_manager' not in st.session_state:

@@ -3,6 +3,12 @@ import streamlit as st
 st.set_page_config(page_title="License - 2D_Mandrake", page_icon="📝")
 
 st.title("📝 User Agreement & License")
+st.info("""
+**Software Governance & Terms of Use**
+Review the licensing model for 2D Mandrake. 
+This document outlines ownership, redistribution rights, and ethical usage guidelines 
+for the core framework and its integrated enterprise management modules.
+""")
 
 from database_manager import DatabaseManager
 if 'db_manager' not in st.session_state:

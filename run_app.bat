@@ -20,7 +20,7 @@ if %errorlevel% neq 0 (
 
 echo [3/3] Starting 2D Mandrake - Service Management & Compliance...
 REM Use 'python -m streamlit' to avoid PATH issues with the streamlit executable
-python -m streamlit run Business_Catalog.py
+python -m streamlit run Ticket_Dashboard.py
 
 if %errorlevel% neq 0 (
     echo.
